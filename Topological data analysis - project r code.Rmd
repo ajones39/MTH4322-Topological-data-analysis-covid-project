@@ -1,0 +1,463 @@
+---
+title: "MTH4322 Topological data analysis"
+author: "Andrew, Eoin, Joshua"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. Packages:
+
+
+```{r}
+#1. Install required packages if not already installed
+if (!require(BallMapper)) install.packages("BallMapper")
+if (!require(dplyr)) install.packages("dplyr")
+if (!require(scales)) install.packages("scales")
+if (!require(igraph)) install.packages("igraph")
+if (!require(ggplot2)) install.packages("ggplot2")
+
+library(BallMapper)
+library(dplyr)
+library(scales)
+library(tidyr)
+library(igraph)
+library(ggplot2)
+```
+
+Seed:
+
+```{r}
+#Set the seed so we have the same results hopefully
+set.seed(12345)
+```
+
+
+2. Data:
+
+```{r}
+# 2. Load Data
+
+covid  <- read.csv(file.choose(), stringsAsFactors = FALSE) #Select covid dataset
+travel <- read.csv(file.choose(), stringsAsFactors = FALSE) #Select travel dataset
+
+
+start_date <- as.Date("2021-01-01")
+end_date   <- as.Date("2021-02-01")  
+
+covid$date   <- as.Date(covid$date, format = "%d/%m/%Y")  #R shows only the first 2 digits of the year, but does store them correctly  
+travel$Day   <- as.Date(travel$Day, format = "%d/%m/%Y")
+
+
+covid_month <- covid %>%
+  filter(date >= start_date & date <= end_date)
+
+travel_month <- travel %>%
+  filter(Day >= start_date & Day <= end_date)
+
+colnames(travel_month) <- c("country", "Code", "date", "Travel_code")
+```
+
+
+3. Clean and merge:
+
+
+```{r}
+
+#3. Select socio economic and demographic variables 
+
+
+# Group by country
+
+data <- covid_month %>%
+  group_by(country) %>%
+  summarise(pop_dens = population_density,
+            date = date,
+            median_age = median_age,
+            gdp_per_capita = gdp_per_capita,
+            hospital_beds_per_thousand = hospital_beds_per_thousand,
+            total_daily_cases_per_million = new_cases_per_million
+  ) %>%
+  drop_na()
+
+data <- data %>%
+  group_by(country) %>%
+  mutate(
+    cumulative_cases_pm = cumsum(total_daily_cases_per_million)
+  ) %>%
+  ungroup()
+
+
+#Merge the 2 datasets
+
+data_travel <- merge(data, travel_month, by = c("country", "date"), all.x = TRUE,
+                     sort = FALSE)
+
+#Clean - remove observations with missing or infinite values
+
+data_clean <- data_travel %>%
+  mutate(
+    Travel_code = ifelse(is.infinite(Travel_code), NA, Travel_code)
+  ) %>%
+  drop_na()
+
+any(is.infinite(as.matrix(data_clean)))
+
+
+#Summarise by country for the single ball mapper plot
+
+country_clean <- data_clean %>%
+  group_by(country) %>%
+  summarise(
+    pop_dens                     = first(pop_dens),
+    median_age                   = first(median_age),
+    gdp_per_capita               = first(gdp_per_capita),
+    hospital_beds_per_thousand   = first(hospital_beds_per_thousand),
+    Travel_code                  = max(Travel_code, na.rm = TRUE),
+    cumulative_cases_pm          = max(cumulative_cases_pm, na.rm = TRUE)
+  ) %>%
+  drop_na()
+
+
+```
+
+
+4. Single Ball mapper:
+
+```{r}
+
+# 4. Applying the ball mapper algorithm to the dataset country_clean
+
+
+# Point cloud: socio-economic + travel variables
+X <- country_clean %>%
+  select(
+    pop_dens,
+    median_age,
+    gdp_per_capita,
+    hospital_beds_per_thousand,
+    Travel_code
+  ) %>%
+  as.data.frame()
+
+# Coloring: cumulative COVID cases per million
+y <- data.frame(country_clean$cumulative_cases_pm)
+colnames(y) <- "cumulative_cases_pm"
+
+
+
+
+X_norm <- BallMapper::normalize_to_min_0_max_1(X)
+
+
+epsilon <- 0.4 # epsilon = 0.4 gives the best results
+
+bm <- BallMapper::BallMapper(
+  points  = X_norm,
+  values  = y,
+  epsilon = epsilon
+)
+
+
+#Static plot
+BallMapper::ColorIgraphPlot(
+  bm,
+  showLegend = TRUE  
+)
+
+
+#Interactive plot
+BallMapper::coloredDynamicNetwork(
+  bm,
+  showLegend = TRUE
+)
+
+
+
+# See whats in ball 2 - Seems to be the biggest most descriptive ball
+#The balls may be different for yous though
+bm$points_covered_by_landmarks[[2]]
+
+country_clean[bm$points_covered_by_landmarks[[2]], ]
+
+
+```
+
+
+Summary for single ball mapper:
+
+
+```{r}
+#5. Summary table for the different balls in the plot for comparison
+
+ball_assign <- rep(NA_integer_, nrow(country_clean))
+
+for (i in seq_along(bm$points_covered_by_landmarks)) {
+  idx <- bm$points_covered_by_landmarks[[i]]
+  ball_assign[idx] <- i
+}
+
+country_ball <- country_clean %>%
+  mutate(ball = ball_assign)
+
+
+# Summary for each ball
+ball_summary <- country_ball %>%
+  group_by(ball) %>%
+  summarise(
+    n_countries   = n(),
+    mean_cases    = mean(cumulative_cases_pm, na.rm = TRUE),
+    mean_pop_dens = mean(pop_dens, na.rm = TRUE),
+    mean_age      = mean(median_age, na.rm = TRUE),
+    mean_gdp      = mean(gdp_per_capita, na.rm = TRUE),
+    mean_beds     = mean(hospital_beds_per_thousand, na.rm = TRUE),
+    mean_travel   = mean(Travel_code, na.rm = TRUE)
+  )
+
+ball_summary
+
+#Seeing which countries are in each ball
+
+countries_in_balls <- country_ball %>%
+  arrange(ball, country) %>%
+  select(country,
+    ball,
+    pop_dens,
+    median_age,
+    gdp_per_capita,
+    hospital_beds_per_thousand,
+    Travel_code)
+
+countries_in_balls
+
+
+```
+
+
+5. Plotting the evolution of average cases per ball (for chosen interesting balls)
+
+```{r}
+
+#Merging the full cleaned dataset (with dates etc) with the dataset that has balls assigned to the countries (with no dates)
+
+data_ball <- data_clean %>%
+  left_join(
+    country_ball %>% select(country, ball),
+    by = "country"
+  )
+
+
+#Making a dataset where it includes mean cases per day per ball, using country ball (country_clean but countries are assigned to their corresponding ball)
+
+ball_ts <- data_ball %>%
+  filter(date >= as.Date("2021-01-01"),
+         date <= as.Date("2021-02-01"),
+         !is.na(ball)) %>%
+  group_by(date, ball) %>%
+  summarise(
+    mean_cases = mean(cumulative_cases_pm, na.rm = TRUE),
+    n_countries = n(),
+    .groups = "drop"
+  )
+
+
+#Choosing the balls (not sure which ones are best to chose yet)
+
+chosen_balls <- c(1, 2, 5, 14)
+
+#Checking the countries in those balls
+
+country_chosen <- country_ball %>%
+  filter(ball %in% chosen_balls) %>%
+  arrange(ball, country) %>%
+  select(country,
+    ball,
+    pop_dens,
+    median_age,
+    gdp_per_capita,
+    hospital_beds_per_thousand,
+    Travel_code)
+
+country_chosen
+
+#filter for chosen balls
+
+ball_ts_chosen <- ball_ts %>%
+  filter(ball %in% chosen_balls)
+
+
+#plot
+
+ggplot(ball_ts_chosen,
+       aes(x = date, y = mean_cases, colour = factor(ball))) +
+  geom_line(linewidth = 1) +
+  labs(
+    x = "Date",
+    y = "Mean cumulative cases per million",
+    colour = "Ball",
+    title = "Evolution of cumulative cases for selected balls"
+  ) +
+  theme_minimal()
+
+
+
+
+
+```
+
+
+
+
+6. Ball mapper for each week
+
+```{r}
+
+#6. Ball mapper for 1st January 2021 - 1st February 2021, 7 day increments
+
+weekly_dates <- seq(
+  from = as.Date("2021-01-01"),
+  to   = as.Date("2021-02-01"),
+  by   = "7 days"
+)
+
+weekly_dates <- as.Date(weekly_dates)
+
+weekly_dates
+
+#Function for creating the plots for each day
+
+bm_weekly_function <- function(the_date, epsilon = 0.4) {
+
+  # 6.1 - snapshot for that day:
+  snapshot <- data_clean %>%
+    filter(date == the_date) %>%
+    drop_na(
+      pop_dens,
+      median_age,
+      gdp_per_capita,
+      hospital_beds_per_thousand,
+      Travel_code,
+      cumulative_cases_pm
+    )
+
+  # 6.2 - point cloud (X) and colouring (y)
+  X <- snapshot %>%
+    select(
+      pop_dens,
+      median_age,
+      gdp_per_capita,
+      hospital_beds_per_thousand,
+      Travel_code
+    ) %>%
+    as.data.frame()
+
+  y <- data.frame(snapshot$cumulative_cases_pm)
+  colnames(y) <- "cumulative_cases_pm"
+
+  # 6.3 - normalize X
+  X_norm <- BallMapper::normalize_to_min_0_max_1(X)
+
+  # 6.4 - run Ball Mapper
+  bm <- BallMapper::BallMapper(
+    points  = X_norm,
+    values  = y,
+    epsilon = epsilon
+  )
+
+  # 6.5 - plot
+  ColorIgraphPlot(
+    bm,
+    showLegend = TRUE,
+    seed_for_plotting = 123
+  )
+  
+  # 6.6 - Title
+  
+  title(
+    main = paste(
+      "Ball Mapper –",
+      format(the_date, "%d %b %Y")   # e.g. "01 Jan 2021"
+    )
+  )
+
+  return(bm)
+}
+
+#Run for each week
+
+bm_1jan <- bm_weekly_function(weekly_dates[1]) # 1st January
+
+bm_8jan <- bm_weekly_function(weekly_dates[2]) #8th of January
+
+bm_15jan <- bm_weekly_function(weekly_dates[3]) #15th January
+
+bm_22jan <- bm_weekly_function(weekly_dates[4]) #22nd January
+
+bm_29jan <- bm_weekly_function(weekly_dates[5]) #29th January
+
+
+
+
+
+```
+
+
+7. Colouring the ball mapper by each variable, overall between 1st January and 1st February
+
+```{r}
+
+#7 - colouring by each variable - function
+
+color_bm_by_var <- function(bm, data_day, var_name, main_title = NULL) {
+  # compute mean of variable inside each ball
+  col_vec <- sapply(bm$points_covered_by_landmarks, function(idx) {
+    mean(data_day[[var_name]][idx], na.rm = TRUE)
+  })
+
+
+  bm2 <- bm
+  bm2$coloring <- col_vec
+  
+
+  ColorIgraphPlot(
+    bm2,
+    showLegend        = TRUE,
+    seed_for_plotting = 123
+  )
+
+  if (is.null(main_title)) {
+    main_title <- paste("Ball Mapper –", the_day, "–", var_name)
+  }
+  title(main_title)
+}
+
+
+
+```
+
+```{r}
+#Calling the function
+
+variables_to_color <- c(
+  "cumulative_cases_pm",
+  "pop_dens",
+  "median_age",
+  "gdp_per_capita",
+  "hospital_beds_per_thousand",
+  "Travel_code"
+)
+
+for (v in variables_to_color) {
+  color_bm_by_var(
+    bm       = bm,
+    data_day = country_clean, #Country_clean is our dataset containing everything between 1st Jan and 1st Feb
+    var_name = v,
+    main_title = paste("Ball Mapper –", v)
+  )
+}
+
+```
+
