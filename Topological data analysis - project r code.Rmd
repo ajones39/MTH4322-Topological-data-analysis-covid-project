@@ -18,6 +18,7 @@ if (!require(dplyr)) install.packages("dplyr")
 if (!require(scales)) install.packages("scales")
 if (!require(igraph)) install.packages("igraph")
 if (!require(ggplot2)) install.packages("ggplot2")
+if (!require(purrr)) install.packages("purrr")
 
 library(BallMapper)
 library(dplyr)
@@ -25,6 +26,7 @@ library(scales)
 library(tidyr)
 library(igraph)
 library(ggplot2)
+library(purrr)
 ```
 
 Seed:
@@ -69,19 +71,22 @@ colnames(travel_month) <- c("country", "Code", "date", "Travel_code")
 # Group by country
 
 data <- covid_month %>%
-  group_by(country) %>%
-  summarise(pop_dens = population_density,
-            date = date,
-            median_age = median_age,
-            gdp_per_capita = gdp_per_capita,
-            hospital_beds_per_thousand = hospital_beds_per_thousand,
-            total_daily_cases_per_million = new_cases_per_million
+  select(
+    country,
+    date,
+    pop_dens                   = population_density,
+    median_age,
+    gdp_per_capita,
+    hospital_beds_per_thousand,
+    total_daily_cases_per_million = new_cases_per_million
   ) %>%
   drop_na()
 
-#Creating the cumulative cases variable
+
+#Creating the cumulative cases variable - sorting by date just incase the dates are scrambled anywhere
 
 data <- data %>%
+  arrange(country, date) %>%
   group_by(country) %>%
   mutate(
     cumulative_cases_pm = cumsum(total_daily_cases_per_million)
@@ -162,8 +167,10 @@ bm <- BallMapper::BallMapper(
 #Static plot
 BallMapper::ColorIgraphPlot(
   bm,
-  showLegend = TRUE  
+  showLegend = TRUE
 )
+
+title(main = paste("Ball Mapper – epsilon =", epsilon))
 
 
 #Interactive plot
@@ -187,22 +194,29 @@ Summary for single ball mapper:
 
 #Assigning each country their corresponding ball id according to the ball mapper above
 
-ball_assign <- rep(NA_integer_, nrow(country_clean))
+# Add an index to keep track of rows (countries)
+country_clean_indexed <- country_clean %>%
+  mutate(point_id = row_number())
 
-for (i in seq_along(bm$points_covered_by_landmarks)) {
-  idx <- bm$points_covered_by_landmarks[[i]]
-  ball_assign[idx] <- i
-}
+# Build (ball, point_id) membership from bm
+membership <- map2_df(
+  .x = bm$points_covered_by_landmarks,
+  .y = seq_along(bm$points_covered_by_landmarks),
+  ~ tibble(
+    ball     = .y,       # ball id
+    point_id = .x        # indices of rows in country_clean
+  )
+)
 
-country_ball <- country_clean %>%
-  mutate(ball = ball_assign)
+# Join back to get country names + inputs (X) per ball
+country_ball <- membership %>%
+  left_join(country_clean_indexed, by = "point_id")
 
-
-# Summary for each ball
+# Summarise per ball
 ball_summary <- country_ball %>%
   group_by(ball) %>%
   summarise(
-    n_countries   = n(),
+    n_countries   = n_distinct(country),
     mean_cases    = mean(cumulative_cases_pm, na.rm = TRUE),
     mean_pop_dens = mean(pop_dens, na.rm = TRUE),
     mean_age      = mean(median_age, na.rm = TRUE),
@@ -213,23 +227,46 @@ ball_summary <- country_ball %>%
 
 ball_summary
 
-#Seeing which countries are in each ball
+
+#Seeing the countries in each ball
 
 countries_in_balls <- country_ball %>%
   arrange(ball, country) %>%
-  select(country,
-    ball,
-    pop_dens,
-    median_age,
-    gdp_per_capita,
-    hospital_beds_per_thousand,
-    Travel_code)
+  select(ball, country, pop_dens, median_age, gdp_per_capita,
+         hospital_beds_per_thousand, Travel_code)
 
 countries_in_balls
 
 
 
+
 ```
+
+Showing different ball mapper plots for different epsilon values, showing 0.4 is the nicest value:
+
+
+```{r}
+eps_examples <- c(0.3, 0.4, 0.5, 0.6)
+
+
+for (eps in eps_examples) {
+  bm_tmp <- BallMapper::BallMapper(
+    points  = X_norm,
+    values  = y,
+    epsilon = eps
+  )
+  ColorIgraphPlot(
+    bm_tmp,
+    showLegend = TRUE,
+    seed_for_plotting = 123
+  )
+  title(main = paste("Ball Mapper – epsilon =", eps))
+}
+
+
+```
+
+
 
 5.  Plotting the evolution of average cases per ball (for chosen interesting balls):
 
@@ -239,9 +276,11 @@ countries_in_balls
 
 data_ball <- data_clean %>%
   left_join(
-    country_ball %>% select(country, ball),
-    by = "country"
+    country_ball %>% select(country, ball) %>% distinct(),
+    by = "country",
+     relationship = "many-to-many" #To silence thee warning about many-to-many by r
   )
+
 
 
 #Making a dataset where it includes mean cases per day per ball, using country ball (country_clean but countries are assigned to their corresponding ball)
@@ -252,10 +291,11 @@ ball_ts <- data_ball %>%
          !is.na(ball)) %>%
   group_by(date, ball) %>%
   summarise(
-    mean_cases = mean(cumulative_cases_pm, na.rm = TRUE),
-    n_countries = n(),
+    mean_cases  = mean(cumulative_cases_pm, na.rm = TRUE),
+    n_countries = n_distinct(country),
     .groups = "drop"
   )
+
 
 
 #Choosing the balls (not sure which ones are best to chose yet)
@@ -266,6 +306,7 @@ chosen_balls <- c(2, 5, 9, 11, 14)
 
 country_chosen <- country_ball %>%
   filter(ball %in% chosen_balls) %>%
+  distinct(country, ball, .keep_all = TRUE) %>%  #Extra safe against duplicate countries in the same ball (probably not needed but is nice)
   arrange(ball, country) %>%
   select(country,
     ball,
@@ -318,13 +359,6 @@ weekly_dates <- as.Date(weekly_dates)
 
 weekly_dates
 
-#Computing the global maximum of cumulative cases for the function below
-
-global_max_cases <- max(
-  data_clean$cumulative_cases_pm,
-  na.rm = TRUE
-)
-
 
 #Function for creating the plots for each day
 
@@ -347,10 +381,21 @@ bm_weekly_function <- function(the_date, epsilon = 0.4) {
     return(NULL)
   }
   
+  # Attach that day's cumulative cases to the country list used in X_norm
+  vals <- country_clean %>%
+    select(country) %>%
+    left_join(
+      snapshot %>% select(country, cumulative_cases_pm),
+      by = "country"
+    )
+
+  # Countries with no data that day get 0
+  vals$cumulative_cases_pm[is.na(vals$cumulative_cases_pm)] <- 0
+  
 
   #6.2 y as proportion of total cumulative cases in this snapshot
-  total_cases <- sum(snapshot$cumulative_cases_pm, na.rm = TRUE)
-  y_prop <- snapshot$cumulative_cases_pm / total_cases
+  total_cases <- sum(vals$cumulative_cases_pm, na.rm = TRUE)
+  y_prop <- vals$cumulative_cases_pm / total_cases
 
   y <- data.frame(y_prop)
   colnames(y) <- "prop_cum_cases"
@@ -398,8 +443,6 @@ bm_22jan <- bm_weekly_function(weekly_dates[4]) #22nd January
 
 bm_29jan <- bm_weekly_function(weekly_dates[5]) #29th January
 
-
-#Not sure why there are warnings on the plot for the 15th of January. I checked the colouring vector and there are no missing values
 
 
 ```
