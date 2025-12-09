@@ -174,11 +174,8 @@ BallMapper::coloredDynamicNetwork(
 
 
 
-# See whats in ball 2 - Seems to be the biggest most descriptive ball
-#The balls may be different for yous though
-bm$points_covered_by_landmarks[[2]]
 
-country_clean[bm$points_covered_by_landmarks[[2]], ]
+
 
 
 ```
@@ -231,6 +228,7 @@ countries_in_balls <- country_ball %>%
 countries_in_balls
 
 
+
 ```
 
 5.  Plotting the evolution of average cases per ball (for chosen interesting balls):
@@ -262,7 +260,7 @@ ball_ts <- data_ball %>%
 
 #Choosing the balls (not sure which ones are best to chose yet)
 
-chosen_balls <- c(1, 2, 5, 14)
+chosen_balls <- c(2, 5, 9, 11, 14)
 
 #Checking the countries in those balls
 
