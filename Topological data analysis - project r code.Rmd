@@ -6,7 +6,12 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  fig.path = "figs/",
+  dev      = c("pdf","png"),
+  fig.width = 6,
+  fig.height = 5
+)
 ```
 
 1.  Packages:
@@ -297,6 +302,8 @@ ball_ts <- data_ball %>%
   )
 
 
+#Plot 1
+
 
 #Choosing the balls (not sure which ones are best to chose yet)
 
@@ -340,6 +347,47 @@ ggplot(ball_ts_chosen,
 
 
 
+
+#Plot 2
+
+#Choosing the balls (not sure which ones are best to chose yet)
+
+chosen_balls <- c(10, 6, 3, 4, 7)
+
+#Checking the countries in those balls
+
+country_chosen <- country_ball %>%
+  filter(ball %in% chosen_balls) %>%
+  distinct(country, ball, .keep_all = TRUE) %>%  #Extra safe against duplicate countries in the same ball (probably not needed but is nice)
+  arrange(ball, country) %>%
+  select(country,
+    ball,
+    pop_dens,
+    median_age,
+    gdp_per_capita,
+    hospital_beds_per_thousand,
+    Travel_code)
+
+country_chosen
+
+#filter for chosen balls
+
+ball_ts_chosen <- ball_ts %>%
+  filter(ball %in% chosen_balls)
+
+
+#plot
+
+ggplot(ball_ts_chosen,
+       aes(x = date, y = mean_cases, colour = factor(ball))) +
+  geom_line(linewidth = 1) +
+  labs(
+    x = "Date",
+    y = "Mean cumulative cases per million",
+    colour = "Ball",
+    title = "Evolution of cumulative cases for selected balls"
+  ) +
+  theme_minimal()
 
 ```
 
@@ -406,12 +454,18 @@ bm_weekly_function <- function(the_date, epsilon = 0.4) {
     values  = y,
     epsilon = epsilon
   )
+  
+  # 6.4 - make ball colours sum to 1 (proportion of total cases per ball)
+  ball_prop <- sapply(bm$points_covered_by_landmarks, function(idx) {
+    sum(y_prop[idx], na.rm = TRUE)
+  })
+  bm$coloring <- ball_prop / sum(ball_prop, na.rm = TRUE)
 
   #check date and for any NAs
   print(the_date)
   print(any(!is.finite(bm$coloring)))
 
-  # 6.4 - plot
+  # 6.5 - plot
   ColorIgraphPlot(
     bm,
     showLegend = TRUE,
@@ -419,7 +473,7 @@ bm_weekly_function <- function(the_date, epsilon = 0.4) {
     maximal_color_scale = 1   # proportions in [0,1]
   )
 
-  # 6.5 - Title
+  # 6.6 - Title
   title(
     main = paste(
       "Ball Mapper –",
